@@ -1,55 +1,331 @@
-async function exportWord() {
-  if (!document.querySelectorAll("#outputArea .sentence").length) {
-    alert("請先翻譯一段文章！");
-    return;
-  }
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>英文學習翻譯工具 + 生字本 + SRS + 匯出</title>
+  <style>
+    body { font-family: "Microsoft JhengHei", Arial, sans-serif; padding: 20px; background: #f7f7f7; }
+    h1 { color: #333; }
+    textarea { width: 100%; height: 120px; margin: 8px 0; padding: 10px; font-size: 16px; }
+    .btn-row { margin: 10px 0; }
+    button { margin: 5px; padding: 8px 14px; border: none; border-radius: 6px; background: #0078d7; color: white; cursor: pointer; }
+    button:hover { background: #005fa3; }
+    .sentence { padding: 8px; margin: 5px 0; border-radius: 6px; }
+    .sentence span.en { cursor: pointer; }
+    .sentence span.en:hover { background: #e9f3ff; }
+    .highlight { background: #ffe08c; }
+    .cn { color: #444; margin-left: 15px; display: block; cursor: pointer; }
+    .word-popup, .review-popup { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background: #fff; border-radius: 6px; }
+    .word-popup h3, .review-popup h3 { margin: 0 0 8px 0; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+    .hidden { color: #aaa; cursor: pointer; }
+  </style>
 
-  const { Document, Packer, Paragraph, Table, TableCell, TableRow, WidthType, TextRun } = docx;
+  <!-- docx.js for Word export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/docx/8.0.2/docx.umd.min.js"></script>
+  <!-- SheetJS for Excel export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+  <h1>英文 → 中文 學習翻譯工具</h1>
 
-  let rows = [];
+  <label for="inputText">輸入英文文章：</label>
+  <textarea id="inputText" placeholder="輸入英文段落"></textarea>
 
-  document.querySelectorAll("#outputArea .sentence").forEach(div => {
-    const enText = [...div.querySelectorAll("span.en")].map(s => s.textContent).join("").trim();
-    const cnText = div.querySelector(".cn")?.textContent || "";
+  <div class="btn-row">
+    <button onclick="translateText()">翻譯並顯示對照</button>
+    <label>中文變體：
+      <select id="langChoice">
+        <option value="zh-TW">繁體中文</option>
+        <option value="zh-CN">簡體中文</option>
+      </select>
+    </label>
+  </div>
 
-    rows.push(
-      new TableRow({
-        children: [
-          new TableCell({
-            children: [
-              new Paragraph({ children: [new TextRun({ text: enText, bold: true })] }),
-              new Paragraph({ children: [new TextRun({ text: cnText })] })
-            ],
-            width: { size: 70, type: WidthType.PERCENTAGE }
-          }),
-          new TableCell({
-            children: [new Paragraph("")],
-            width: { size: 30, type: WidthType.PERCENTAGE }
-          })
-        ]
-      })
-    );
-  });
+  <h2>對照結果：</h2>
+  <div class="btn-row">
+    <button onclick="exportWord()">匯出 Word</button>
+    <button onclick="exportExcel()">匯出 Excel</button>
+  </div>
+  <div id="outputArea"></div>
 
-  const table = new Table({
-    rows: rows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
-  });
+  <!-- 單字查詢區 -->
+  <div id="wordPopup" class="word-popup" style="display:none;">
+    <h3>單字查詢</h3>
+    <p><b>英文：</b> <span id="wordEn"></span>
+      <button onclick="speakWord()">🔊 發音</button>
+      <button onclick="addToNotebook()">➕ 加入生字本</button>
+    </p>
+    <p><b>中文：</b> <span id="wordCn"></span></p>
+  </div>
 
-  const doc = new Document({
-    sections: [
-      {
-        properties: {},
-        children: [table]
+  <!-- 生字本 -->
+  <h2>📘 生字本</h2>
+  <div class="btn-row">
+    <button onclick="exportNotebook()">匯出 JSON</button>
+    <input type="file" id="importFile" onchange="importNotebook(event)" style="display:none;">
+    <button onclick="document.getElementById('importFile').click()">匯入 JSON</button>
+    <button onclick="startReview()">開始複習</button>
+  </div>
+  <table id="notebookTable">
+    <thead>
+      <tr><th>英文</th><th>中文</th><th>下次複習</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- 複習模式 -->
+  <div id="reviewPopup" class="review-popup" style="display:none;">
+    <h3>🔄 生字複習</h3>
+    <p><b>英文：</b> <span id="reviewWordEn"></span>
+      <button onclick="speakReview()">🔊</button>
+    </p>
+    <p><b>中文：</b> <span id="reviewWordCn" class="hidden" onclick="this.classList.remove('hidden')">點擊顯示翻譯</span></p>
+    <div class="btn-row">
+      <button onclick="markKnown()">✔ 我會了</button>
+      <button onclick="markUnknown()">✘ 還不會</button>
+      <button onclick="nextReview()">下一題</button>
+      <button onclick="endReview()">結束複習</button>
+    </div>
+  </div>
+
+  <script>
+    let notebook = [];
+    let currentWord = "";
+    let currentCn = "";
+    let reviewList = [];
+    let currentReview = null;
+
+    // 切句
+    function splitSentences(text) {
+      return text.match(/[^.!?]+[.!?]?/g) || [];
+    }
+
+    // 翻譯
+    async function translateSentence(sentence, targetLang) {
+      const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=" + targetLang + "&dt=t&q=" + encodeURIComponent(sentence);
+      const res = await fetch(url);
+      const data = await res.json();
+      return data[0].map(item => item[0]).join("");
+    }
+
+    async function translateText() {
+      const input = document.getElementById("inputText").value.trim();
+      const outputArea = document.getElementById("outputArea");
+      const langChoice = document.getElementById("langChoice").value;
+      outputArea.innerHTML = "";
+      document.getElementById("wordPopup").style.display = "none";
+      if (!input) { alert("請輸入英文文字"); return; }
+
+      const sentences = splitSentences(input);
+      for (let s of sentences) {
+        const translated = await translateSentence(s, langChoice);
+        const div = document.createElement("div");
+        div.className = "sentence";
+
+        const words = s.trim().split(/\s+/);
+        words.forEach((w) => {
+          const wordSpan = document.createElement("span");
+          wordSpan.textContent = w + " ";
+          wordSpan.className = "en";
+          wordSpan.onclick = () => lookupWord(w);
+          div.appendChild(wordSpan);
+        });
+
+        const cnSpan = document.createElement("span");
+        cnSpan.className = "cn";
+        cnSpan.textContent = translated;
+        div.appendChild(cnSpan);
+
+        outputArea.appendChild(div);
       }
-    ]
-  });
+    }
 
-  const blob = await Packer.toBlob(doc);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "中英文對照.docx";
-  a.click();
-  URL.revokeObjectURL(url);
-}
+    // 查單字
+    async function lookupWord(word) {
+      const langChoice = document.getElementById("langChoice").value;
+      const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=" + langChoice + "&dt=t&q=" + encodeURIComponent(word);
+      const res = await fetch(url);
+      const data = await res.json();
+      const translated = data[0].map(item => item[0]).join("");
+
+      currentWord = word;
+      currentCn = translated;
+      document.getElementById("wordEn").textContent = word;
+      document.getElementById("wordCn").textContent = translated;
+      document.getElementById("wordPopup").style.display = "block";
+    }
+
+    function speakWord() {
+      if (!currentWord) return;
+      const utter = new SpeechSynthesisUtterance(currentWord);
+      utter.lang = "en-US";
+      speechSynthesis.speak(utter);
+    }
+
+    // 生字本
+    function addToNotebook() {
+      if (!currentWord || !currentCn) return;
+      if (!notebook.some(w => w.en === currentWord)) {
+        notebook.push({ en: currentWord, cn: currentCn, interval: 1, nextReview: todayString() });
+        updateNotebookTable();
+      }
+    }
+
+    function updateNotebookTable() {
+      const tbody = document.querySelector("#notebookTable tbody");
+      tbody.innerHTML = "";
+      notebook.forEach(w => {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${w.en}</td><td>${w.cn}</td><td>${w.nextReview}</td>`;
+        tbody.appendChild(row);
+      });
+    }
+
+    // 匯出 JSON
+    function exportNotebook() {
+      const blob = new Blob([JSON.stringify(notebook, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "notebook.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function importNotebook(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          notebook = JSON.parse(e.target.result);
+          updateNotebookTable();
+        } catch {
+          alert("檔案格式錯誤");
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    // SRS 複習
+    function startReview() {
+      const today = todayString();
+      reviewList = notebook.filter(w => w.nextReview <= today);
+      if (reviewList.length === 0) { alert("今天沒有要複習的單字"); return; }
+      document.getElementById("reviewPopup").style.display = "block";
+      nextReview();
+    }
+
+    function nextReview() {
+      if (reviewList.length === 0) {
+        alert("今天的複習完成！");
+        endReview();
+        return;
+      }
+      currentReview = reviewList.pop();
+      document.getElementById("reviewWordEn").textContent = currentReview.en;
+      const cnSpan = document.getElementById("reviewWordCn");
+      cnSpan.textContent = currentReview.cn;
+      cnSpan.classList.add("hidden");
+    }
+
+    function markKnown() {
+      if (!currentReview) return;
+      currentReview.interval = Math.min(currentReview.interval * 2, 30);
+      currentReview.nextReview = addDays(currentReview.interval);
+      updateNotebookTable();
+      nextReview();
+    }
+
+    function markUnknown() {
+      if (!currentReview) return;
+      currentReview.interval = 1;
+      currentReview.nextReview = addDays(1);
+      updateNotebookTable();
+      nextReview();
+    }
+
+    function speakReview() {
+      if (!currentReview) return;
+      const utter = new SpeechSynthesisUtterance(currentReview.en);
+      utter.lang = "en-US";
+      speechSynthesis.speak(utter);
+    }
+
+    function endReview() {
+      document.getElementById("reviewPopup").style.display = "none";
+      currentReview = null;
+    }
+
+    // 匯出 Word
+    async function exportWord() {
+      if (!document.querySelectorAll("#outputArea .sentence").length) {
+        alert("請先翻譯一段文章！");
+        return;
+      }
+      const { Document, Packer, Paragraph, Table, TableCell, TableRow, WidthType, TextRun } = docx;
+      let rows = [];
+      document.querySelectorAll("#outputArea .sentence").forEach(div => {
+        const enText = [...div.querySelectorAll("span.en")].map(s => s.textContent).join("").trim();
+        const cnText = div.querySelector(".cn")?.textContent || "";
+        rows.push(
+          new TableRow({
+            children: [
+              new TableCell({
+                children: [
+                  new Paragraph({ children: [new TextRun({ text: enText, bold: true })] }),
+                  new Paragraph({ children: [new TextRun({ text: cnText })] })
+                ],
+                width: { size: 70, type: WidthType.PERCENTAGE }
+              }),
+              new TableCell({
+                children: [new Paragraph("")],
+                width: { size: 30, type: WidthType.PERCENTAGE }
+              })
+            ]
+          })
+        );
+      });
+      const table = new Table({ rows: rows, width: { size: 100, type: WidthType.PERCENTAGE } });
+      const doc = new Document({ sections: [{ properties: {}, children: [table] }] });
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "中英文對照.docx";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // 匯出 Excel
+    function exportExcel() {
+      if (!document.querySelectorAll("#outputArea .sentence").length) {
+        alert("請先翻譯一段文章！");
+        return;
+      }
+      let data = [["英文 + 中文", "空白"]];
+      document.querySelectorAll("#outputArea .sentence").forEach(div => {
+        const enText = [...div.querySelectorAll("span.en")].map(s => s.textContent).join("").trim();
+        const cnText = div.querySelector(".cn")?.textContent || "";
+        data.push([enText + "\n" + cnText, ""]);
+      });
+      let ws = XLSX.utils.aoa_to_sheet(data);
+      let wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "中英文對照");
+      XLSX.writeFile(wb, "中英文對照.xlsx");
+    }
+
+    // 日期工具
+    function todayString() {
+      return new Date().toISOString().split("T")[0];
+    }
+    function addDays(n) {
+      const d = new Date();
+      d.setDate(d.getDate() + n);
+      return d.toISOString().split("T")[0];
+    }
+  </script>
+</body>
+</html>
