@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>英文學習翻譯工具</title>
+  <style>
+    body { font-family: "Microsoft JhengHei", Arial, sans-serif; padding: 20px; background: #f7f7f7; }
+    h1 { color: #333; }
+    textarea { width: 100%; height: 120px; margin: 8px 0; padding: 10px; font-size: 16px; }
+    .btn-row { margin: 10px 0; }
+    button { margin: 5px; padding: 8px 14px; border: none; border-radius: 6px; background: #0078d7; color: white; cursor: pointer; }
+    button:hover { background: #005fa3; }
+    .sentence { padding: 8px; margin: 5px 0; border-radius: 6px; cursor: pointer; }
+    .sentence:hover { background: #e9f3ff; }
+    .highlight { background: #ffe08c; }
+    .cn { color: #444; margin-left: 15px; display: block; }
+    select { padding: 5px; margin-left: 10px; }
+  </style>
+</head>
+<body>
+  <h1>英文 → 中文 學習翻譯工具</h1>
+
+  <label for="inputText">輸入英文文章：</label>
+  <textarea id="inputText" placeholder="輸入英文段落，例如：\nLearning English is fun. It helps us communicate with the world."></textarea>
+
+  <div class="btn-row">
+    <button onclick="translateText()">翻譯並顯示對照</button>
+    <label>中文變體：
+      <select id="langChoice">
+        <option value="zh-TW">繁體中文</option>
+        <option value="zh-CN">簡體中文</option>
+      </select>
+    </label>
+  </div>
+
+  <h2>對照結果：</h2>
+  <div id="outputArea"></div>
+
+  <script>
+    // 切句 (簡單以.?!分割)
+    function splitSentences(text) {
+      return text.match(/[^.!?]+[.!?]?/g) || [];
+    }
+
+    // 呼叫 Google Translate API
+    async function translateSentence(sentence, targetLang) {
+      const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=" + targetLang + "&dt=t&q=" + encodeURIComponent(sentence);
+      const res = await fetch(url);
+      const data = await res.json();
+      return data[0].map(item => item[0]).join("");
+    }
+
+    async function translateText() {
+      const input = document.getElementById("inputText").value.trim();
+      const outputArea = document.getElementById("outputArea");
+      const langChoice = document.getElementById("langChoice").value;
+
+      outputArea.innerHTML = "";
+
+      if (!input) {
+        alert("請輸入英文文字");
+        return;
+      }
+
+      const sentences = splitSentences(input);
+      for (let s of sentences) {
+        const translated = await translateSentence(s, langChoice);
+
+        const div = document.createElement("div");
+        div.className = "sentence";
+
+        // 英文
+        const enSpan = document.createElement("span");
+        enSpan.textContent = s.trim();
+        enSpan.onclick = () => speak(enSpan, s, "en-US");
+        div.appendChild(enSpan);
+
+        // 中文
+        const cnSpan = document.createElement("span");
+        cnSpan.className = "cn";
+        cnSpan.textContent = translated;
+        cnSpan.onclick = () => speak(cnSpan, translated, langChoice);
+        div.appendChild(cnSpan);
+
+        outputArea.appendChild(div);
+      }
+    }
+
+    // 語音播放
+    function speak(el, text, lang) {
+      speechSynthesis.cancel(); // 停止之前的
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = lang;
+      utter.onstart = () => {
+        document.querySelectorAll(".highlight").forEach(e => e.classList.remove("highlight"));
+        el.classList.add("highlight");
+      };
+      utter.onend = () => el.classList.remove("highlight");
+      speechSynthesis.speak(utter);
+    }
+  </script>
+</body>
+</html>
